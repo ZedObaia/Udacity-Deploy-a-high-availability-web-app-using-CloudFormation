@@ -1,0 +1,193 @@
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+    Default: "MyUdacityProj2"
+
+  AmazonImageId:
+    Description: Amazon Linux AMI ID
+    Type: String
+    Default: ami-0729e439b6769d6ab
+
+  InstanceType:
+    Description: Type of EC2 instance
+    Type: String
+    Default: t2.medium
+
+Resources:
+  # load balance security group
+  LBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http from/to load balancer
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-LBSecurityGroup"
+  # web nodes security group
+  WebNodeSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic web traffic & ssh to the web nodes and allow ssh, allow all outgoing traffic
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-WebNodeSecGroup"
+
+  ReadS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvironmentName}-ec2-role"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  Ec2InstanceProfileWithRule:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ReadS3Role
+
+  S3AccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AmazonS3ReadOnlyAccess
+      Roles:
+        - !Ref ReadS3Role
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:List*
+            Resource:
+              - !Sub "arn:aws:s3:::myudacityproj2"
+              - !Sub "arn:aws:s3:::myudacityproj2/*"
+
+  WebNodeLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      IamInstanceProfile: !Ref Ec2InstanceProfileWithRule
+      ImageId: !Ref AmazonImageId
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref WebNodeSecGroup
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdh"
+          Ebs:
+            VolumeSize: "10"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install unzip awscli -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          aws s3 cp s3://myudacityproj2/index.html .
+
+  WebNodeAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName: !Ref WebNodeLaunchConfig
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PRI1-SN"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PRI2-SN"
+      MaxSize: 6
+      MinSize: 4
+      DesiredCapacity: 4
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-asg"
+          PropagateAtLaunch: false
+      TargetGroupARNs:
+        - !Ref WebNodeTargetGroup
+
+  WebNodeTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      Matcher:
+        HttpCode: 200
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      SecurityGroups:
+        - !Ref LBSecurityGroup
+      Subnets:
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebNodeTargetGroup
+
+  LoadBalancerListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref LoadBalancerListener
+      Priority: 1
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref WebNodeTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /
+Outputs:
+    LoadBalancerDNS:
+        Description: Public URL of the Load Balancer
+        Value: !Join ["", ["http://", !GetAtt LoadBalancer.DNSName]]
+        Export:
+            Name: !Sub ${EnvironmentName}-lb-dns-name

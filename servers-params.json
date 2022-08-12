@@ -1,0 +1,14 @@
+[
+  {
+    "ParameterKey": "EnvironmentName",
+    "ParameterValue": "MyUdacityProj2"
+  },
+  {
+    "ParameterKey": "AmazonImageId",
+    "ParameterValue": "ami-0729e439b6769d6ab"
+  },
+  {
+    "ParameterKey": "InstanceType",
+    "ParameterValue": "t2.medium"
+  }
+]
