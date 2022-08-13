@@ -1,5 +1,9 @@
 ## Udacity Cloud Devops Nanodegree - Deploy a high-availability web app using CloudFormation Project
 
+### Architecture overview
+
+![Architecture](./Project%202.jpeg)
+
 ### To deploy the project simply run the following
 
 ```
